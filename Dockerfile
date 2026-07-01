@@ -11,4 +11,4 @@ RUN npm install
 # עכשיו מעתיק את הקוד
 COPY . .
 
-CMD ["node", "src/server.js"]
+CMD ["node", "src/app.js"]
