@@ -19,14 +19,13 @@ app.get('/api/health', (req, res) => {
 });
 
 // הלוגיקה של התרגיל
-app.get('/', async (req, res) => {
+// שנה את הנתיב מ-'/' ל-'/api/visits'
+app.get('/api/visits', async (req, res) => {
     let visits = await client.get('visits');
     if (visits === null) visits = 0;
     
-    const newVisits = parseInt(visits) + 1;
-    await client.set('visits', newVisits);
-    
-    res.send(`מספר המבקרים באתר: ${newVisits}`);
+    const visits = await client.get('visits');
+  res.send(`מספר המבקרים: ${visits || 0}`);
 });
 
 app.listen(8080, '0.0.0.0', () => console.log('Backend running on port 8080'));
