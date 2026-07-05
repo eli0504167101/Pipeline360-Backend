@@ -6,7 +6,11 @@ const app = express();
 app.use(cors()); // מאפשר גישה מכל מקור
 
 const client = redis.createClient({ url: 'redis://redis-server:6379' });
-client.connect();
+client.connect().then(() => {
+    console.log('Successfully connected to Redis!');
+}).catch(err => {
+    console.error('Redis connection error:', err);
+});
 
 // ה-Health check שדרשת
 // בתוך ה-app.js
