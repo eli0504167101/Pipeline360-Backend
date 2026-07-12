@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// פונקציית  שתחכה לחיבור ל-DB
+// פו  שתחכה לחיבור ל-DB
 const startServer = async () => {
     await connectDB();
     console.log("Starting test write...");
