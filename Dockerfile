@@ -2,13 +2,13 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# מעתיק קודם רק את קבצי ההגדרות כדי לחסוך זמן בבנייה
+# Copy dependency manifests first to improve Docker layer caching.
 COPY package*.json ./
 
-# כאן הוא מתקין הכל, כולל cors
-RUN npm install
+# Install the exact production dependencies from package-lock.json.
+RUN npm ci --omit=dev
 
-# עכשיו מעתיק את הקוד
+# Copy the application source code.
 COPY . .
 
 EXPOSE 3000
