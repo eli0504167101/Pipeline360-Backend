@@ -1,19 +1,26 @@
 {
   "name": "hotel-backend",
   "version": "1.0.0",
-  "main": "server.js",
+  "main": "src/server.js",
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
     "express": "^4.22.2",
     "mongoose": "^9.7.3"
   },
-  "description": "README.md",
+  "description": "Pipeline360 backend service",
   "devDependencies": {},
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node src/server.js",
+    "check": "node --check src/server.js && node --check src/config/db.js && node --check src/controllers/reservationController.js && node --check src/models/Hotel.js && node --check src/models/Reservation.js && node --check src/routes/reservationRoutes.js",
+    "test": "npm run check"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "pipeline360",
+    "hotel",
+    "express",
+    "mongodb"
+  ],
+  "author": "Eli",
   "license": "ISC"
 }
