@@ -148,8 +148,12 @@ Stores reservation information.
 ```text
 PORT
 MONGO_URL
-MONGO_PASSWORD
 ```
+`MONGO_URL` is provided by the `app-config` Kubernetes ConfigMap.
+
+The backend does not currently use a separate MongoDB password environment
+variable because MongoDB internal authentication is not enabled in the local
+Kind environment.
 
 ---
 
