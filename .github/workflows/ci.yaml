@@ -59,10 +59,11 @@ jobs:
             echo "Found: $file"
           done
 
-  docker-build:
-    name: Validate backend Docker build
+  build-and-push:
+    name: Build and push backend image
     needs:
       - validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
 
     steps:
@@ -72,11 +73,19 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build backend image without pushing
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push backend image
         uses: docker/build-push-action@v5
         with:
           context: .
-          push: false
-          tags: pipeline360-backend:ci-validation
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/hotel-backend:backend-${{ github.run_number }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/hotel-backend:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
