@@ -8,7 +8,7 @@ COPY package*.json ./
 # Install the exact production dependencies from package-lock.json.
 RUN npm ci --omit=dev
 
-# Copy the application source code.
+# Copy the application source .
 COPY . .
 
 EXPOSE 3000
