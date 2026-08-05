@@ -4,6 +4,11 @@ on:
   push:
     branches:
       - dev
+    paths-ignore:
+      - README.md
+      - docs/**
+      - LICENSE
+      
   pull_request:
     branches:
       - main
