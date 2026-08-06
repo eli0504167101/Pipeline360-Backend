@@ -14,7 +14,7 @@ app.use(cors());
 app.use(express.json());
 
 // Liveness Probe:
-// בודק רק שהשרת עצמו חי ומגיב.
+// בודק רק שהשרת עצמו חי
 app.get('/health', (req, res) => {
     res.status(200).json({
         status: 'healthy'
