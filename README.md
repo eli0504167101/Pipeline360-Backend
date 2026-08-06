@@ -162,13 +162,13 @@ Kind environment.
 Deployment:
 
 ```text
-infra-repo/kubernetes/backend/deployment.yaml
+Pipeline360-Infra/kubernetes/backend/deployment.yaml
 ```
 
 Service:
 
 ```text
-infra-repo/kubernetes/backend/service.yaml
+Pipeline360-Infra/kubernetes/backend/service.yaml
 ```
 
 Default replicas:
@@ -185,8 +185,9 @@ The backend image is built automatically by GitHub Actions and pushed to Docker 
 
 ---
 
+
 ## Related Documentation
 
-- ../README.md
-- ../PIPELINE360_STARTUP_GUIDE.md
-- ../infra-repo/README.md
+- [Pipeline360 Frontend](https://github.com/eli0504167101/Pipeline360-Frontend)
+- [Pipeline360 Infrastructure](https://github.com/eli0504167101/Pipeline360-Infra)
+- [Infrastructure Documentation](https://github.com/eli0504167101/Pipeline360-Infra/blob/main/README.md)
