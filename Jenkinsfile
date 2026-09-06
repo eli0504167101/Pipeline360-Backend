@@ -30,6 +30,7 @@ pipeline {
             steps {
                 sh '''
                     docker build \
+                      --pull \
                       -t ${DOCKER_IMAGE}:jenkins-${BUILD_NUMBER} \
                       .
                 '''
