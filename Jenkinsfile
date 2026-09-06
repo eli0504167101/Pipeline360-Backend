@@ -36,6 +36,22 @@ pipeline {
             }
         }
 
+        stage('Security Scan') {
+            steps {
+                sh '''
+                    docker run --rm \
+                      -v /var/run/docker.sock:/var/run/docker.sock \
+                      -v trivy_cache:/root/.cache/trivy \
+                      aquasec/trivy:latest image \
+                      --timeout 45m \
+                      --severity HIGH,CRITICAL \
+                      --exit-code 1 \
+                      --scanners vuln \
+                      ${DOCKER_IMAGE}:jenkins-${BUILD_NUMBER}
+                '''
+            }
+        }
+
         stage('Docker Hub Login') {
             steps {
                 withCredentials([
