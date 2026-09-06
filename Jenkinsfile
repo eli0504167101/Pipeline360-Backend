@@ -1,6 +1,10 @@
 pipeline {
     agent any
 
+    environment {
+        DOCKER_IMAGE = 'eli0504167101/hotel-backend'
+    }
+
     stages {
         stage('Checkout') {
             steps {
@@ -26,10 +30,44 @@ pipeline {
             steps {
                 sh '''
                     docker build \
-                      -t hotel-backend:jenkins-test \
+                      -t ${DOCKER_IMAGE}:jenkins-${BUILD_NUMBER} \
                       .
                 '''
             }
+        }
+
+        stage('Docker Hub Login') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub-credentials',
+                        usernameVariable: 'DOCKERHUB_USERNAME',
+                        passwordVariable: 'DOCKERHUB_TOKEN'
+                    )
+                ]) {
+                    sh '''
+                        echo "$DOCKERHUB_TOKEN" | \
+                        docker login \
+                          -u "$DOCKERHUB_USERNAME" \
+                          --password-stdin
+                    '''
+                }
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                sh '''
+                    docker push \
+                      ${DOCKER_IMAGE}:jenkins-${BUILD_NUMBER}
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            sh 'docker logout || true'
         }
     }
 }
