@@ -1,6 +1,8 @@
 name: Backend CI
 
 on:
+  workflow_dispatch:
+
   push:
     branches:
       - dev
@@ -63,6 +65,29 @@ jobs:
 
             echo "Found: $file"
           done
+
+      - name: Generate build metadata
+        env:
+          SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          mkdir -p build-metadata
+
+          cat > build-metadata/build-info.json <<EOF
+          {
+            "project": "Pipeline360-Backend",
+            "commit": "${GITHUB_SHA}",
+            "source_commit": "${SOURCE_COMMIT}",
+            "branch": "${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}",
+            "build_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+      - name: Upload build metadata artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-build-metadata
+          path: build-metadata/build-info.json
+          if-no-files-found: error
 
   build-and-push:
     name: Build and push backend image
