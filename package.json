@@ -9,11 +9,14 @@
     "mongoose": "^9.7.3"
   },
   "description": "Pipeline360 backend service",
-  "devDependencies": {},
+  "devDependencies": {
+    "supertest": "^7.3.1"
+  },
   "scripts": {
     "start": "node src/server.js",
-    "check": "node --check src/server.js && node --check src/config/db.js && node --check src/controllers/reservationController.js && node --check src/models/Hotel.js && node --check src/models/Reservation.js && node --check src/routes/reservationRoutes.js",
-    "test": "npm run check"
+    "check": "node --check src/app.js && node --check src/server.js && node --check src/config/db.js && node --check src/controllers/reservationController.js && node --check src/models/Hotel.js && node --check src/models/Reservation.js && node --check src/routes/reservationRoutes.js",
+    "test": "npm run check && npm run test:api",
+    "test:api": "node --test test/api.test.js"
   },
   "keywords": [
     "pipeline360",
