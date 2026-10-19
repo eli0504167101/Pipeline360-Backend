@@ -334,10 +334,10 @@ latest
 
 Where:
 
-- `backend-N` is an immutable version generated from the GitHub Actions workflow run number.
-- `latest` points to the newest successful build.
+- `backend-N` is a versioned tag generated from the GitHub Actions workflow run number. The workflow does not enforce tag immutability; re-running a build can overwrite the same tag.
+- `latest` is updated by each successful image push; concurrent or repeated runs can change which build it references.
 
-Kubernetes deploys the immutable versioned tag.
+Kubernetes deploys the numbered image tag rather than `latest`. The manifest references a tag, not an image digest.
 
 Example:
 
@@ -368,11 +368,132 @@ docker run \
 
 ---
 
+## CI/CD and GitOps Workflow
+
+Pipeline360 separates application delivery from infrastructure deployment. GitHub Actions validates the backend and publishes Docker images, while Argo CD reconciles the Kubernetes cluster with the desired state stored in the infrastructure repository.
+
+### Delivery Flow
+
+```mermaid
+flowchart TD
+    A[Backend PR to dev or main] --> B[Syntax checks and 27 API tests]
+    B --> C[Manual merge to dev]
+    C --> D[Push to dev: validate again]
+    D --> E[Build and push Docker image]
+    E --> F[Backend CI completes successfully]
+    F --> G[Deployment Preparation workflow]
+    G --> H[Open image update PR in Infra]
+    H --> I[Infrastructure validation]
+    I --> J[Manual verification and merge to main]
+    J --> K[Argo CD automatic synchronization]
+    K --> L[Kubernetes rolling update]
+    L --> M[Manual verification and Ingress smoke tests]
+```
+
+### 1. Pull Request Validation
+
+The `Backend CI` workflow, defined in `.github/workflows/ci.yaml`, runs for pull requests targeting `dev` or `main`.
+
+The `validate` job installs dependencies with `npm ci`, runs `npm test`, verifies required project files, and uploads build metadata.
+
+Pull request runs do not build or publish Docker images. Image publishing is restricted to successful validation runs triggered by a push to `dev`.
+
+### 2. Automated API Tests
+
+The test suite contains 27 tests implemented with Node.js `node:test` and `supertest`.
+
+Tests send HTTP requests through the actual Express middleware, routes, and controllers. Mongoose operations are mocked, so the suite requires no running MongoDB instance or database credentials.
+
+Coverage includes:
+
+- Health and readiness responses.
+- Hotel listing and reservation lookup.
+- Reservation creation and cancellation.
+- Required fields, email validation, and invalid dates.
+- Missing hotels, overlapping reservations, duplicate keys, and database failures.
+
+The Express application is exported from `src/app.js`; production startup and database connection logic remain in `src/server.js`. Mocks are restored between tests, and HTTP requests have timeouts.
+
+These tests validate API behavior without verifying persistence or query execution against a real database.
+
+### 3. Docker Image Build and Push
+
+A push to `dev` runs validation again. After validation succeeds, `build-and-push` uses Docker Buildx to build and publish:
+
+```text
+eli0504167101/hotel-backend:backend-<workflow-run-number>
+eli0504167101/hotel-backend:latest
+```
+
+Kubernetes manifests use the numbered tag. For example, Backend CI run number 19 published `backend-19`.
+
+The numbered tag provides release traceability, but the current workflow does not enforce tag immutability or pin deployments by image digest.
+
+Pushes containing only changes to `README.md`, `docs/**`, or `LICENSE` do not trigger this pipeline.
+
+### 4. Deployment Preparation Pull Request
+
+`.github/workflows/deployment-preparation.yaml` listens for completion of `Backend CI`. Its update job runs only when the source workflow:
+
+- Completed successfully.
+- Was triggered by a `push`.
+- Ran on branch `dev`.
+
+The workflow checks out `Pipeline360-Infra/main`, updates the image reference in `kubernetes/backend/deployment.yaml`, and opens a pull request from:
+
+```text
+deployment/backend-<source-run-id>
+```
+
+The PR records the image tag, source commit, and CI run URL. Infrastructure validation checks the proposed manifests before merge.
+
+### 5. Manual Approval and GitOps Deployment
+
+The delivery process uses manual review and merge of the infrastructure PR as the release approval step. The automation does not merge the PR.
+
+Required reviews are not currently enforced by branch protection or rulesets; approval is an operational practice.
+
+The Argo CD application `pipeline360-backend` is configured with:
+
+```yaml
+repoURL: https://github.com/eli0504167101/Pipeline360-Infra.git
+targetRevision: main
+path: kubernetes/backend
+```
+
+Automatic synchronization, pruning, and self-healing are enabled. After the infrastructure PR is merged, Argo CD detects the desired-state change and applies it to namespace `hotel-system`. GitHub Actions does not run a direct Kubernetes deployment command.
+
+### 6. Kubernetes Rolling Update and Verification
+
+The backend Deployment declares five replicas. Updating its image triggers Kubernetes’ default `RollingUpdate` strategy, gradually replacing the previous Pods.
+
+The application exposes `/health` for liveness and `/ready` for readiness, including MongoDB connection status.
+
+Post-deployment verification checks:
+
+- Argo CD is `Synced` and `Healthy` at the expected Git revision.
+- All five backend replicas are updated, available, and ready.
+- Every backend Pod uses the intended image.
+- The rolling update has completed.
+
+Smoke tests are performed manually through the existing Ingress access path in the local environment:
+
+| Endpoint | Expected result |
+|---|---|
+| `http://hotel.local:3000/api/reservations/hotels` | HTTP 200 and a valid JSON array |
+| `http://hotel.local:3000` | HTTP 200 and the frontend HTML document |
+
+The Ingress routes `/api` to `backend-service:3000` and `/` to `frontend-service:80`. Port `3000` in these URLs is part of the local access setup, rather than a port declared by the Ingress resource.
+
+For the `backend-19` release, both smoke checks passed, and all five backend Pods were running and ready.
+
+---
+
 # GitHub Actions
 
-The backend repository implements **two independent GitHub Actions pipelines**.
+The backend repository implements **two separate GitHub Actions workflows**, with deployment preparation triggered by completion of Backend CI.
 
-This structure follows the project requirement that the deployment preparation pipeline starts only after the build pipeline completes successfully.
+The deployment preparation workflow listens for Backend CI completion. Its infrastructure update job runs only after a successful CI run triggered by a push to `dev`.
 
 ---
 
@@ -384,11 +505,13 @@ Workflow:
 .github/workflows/ci.yaml
 ```
 
-Trigger:
+Triggers:
 
-```text
-Push → dev branch
-```
+- Push to `dev`, excluding changes limited to `README.md`, `docs/**`, and `LICENSE`.
+- Pull requests targeting `dev` or `main`.
+- Manual execution through `workflow_dispatch`.
+
+Validation runs for all these events. Docker image build and push run only after successful validation for a push to `dev`; pull request and manual runs perform validation only.
 
 Responsibilities:
 
@@ -407,7 +530,7 @@ backend-N
 latest
 ```
 
-Pipeline overview:
+Publishing flow for a qualifying push to `dev`:
 
 ```text
 Developer
@@ -434,7 +557,7 @@ Push backend-N
 Push latest
 ```
 
-The Build Pipeline ends after the Docker image has been published successfully.
+For a qualifying push to `dev`, the build job publishes the image before the workflow finishes its remaining cleanup steps. Deployment preparation depends on completion of the entire Backend CI run.
 
 ---
 
@@ -449,10 +572,10 @@ Workflow:
 Trigger:
 
 ```text
-Successful completion of Backend CI
+Backend CI completes (workflow_run: completed)
 ```
 
-The workflow runs only when:
+The `update-infra` job runs only when:
 
 - Backend CI completed successfully
 - The source branch was `dev`
@@ -504,7 +627,7 @@ Pipeline360-Infra/main
 
 The workflow never pushes deployment changes directly to `main`.
 
-The Pull Request requires review, approval and merge before Argo CD deploys the new version.
+The intended release process is manual verification and merge of the Pull Request into `main`. The workflow does not merge it automatically. Required reviews are not currently enforced by branch protection or rulesets.
 
 ---
 
@@ -597,7 +720,7 @@ The desired Kubernetes state is maintained in:
 Pipeline360-Infra
 ```
 
-Argo CD deploys the Backend only after the Infrastructure Pull Request is reviewed and merged into `main`.
+Argo CD synchronizes Backend manifests from Infrastructure `main`. The intended workflow updates that branch by manually verifying and merging the Infrastructure Pull Request; Argo CD does not check PR review or approval status.
 
 ---
 
@@ -714,18 +837,11 @@ Deployment occurs in two stages:
 1. Build and publish a Docker image.
 2. Update the Infrastructure repository.
 
-The deployment is performed only after:
+The intended release process is to verify the Infrastructure Pull Request and merge it into `main`. Argo CD automatically synchronizes changes from that branch. Review and approval are operational practices, not technically enforced prerequisites in the current repository configuration.
 
-- The Infrastructure Pull Request has been reviewed.
-- The Pull Request has been approved.
-- The Pull Request has been merged into `main`.
+Git records the manifest changes and provides a reviewable history linking image updates to source commits and workflow runs.
 
-This process guarantees that every deployment is:
-
-- Version controlled
-- Fully reviewable
-- Auditable
-- Reproducible
+Byte-for-byte reproducible builds are not guaranteed. Although `npm ci` uses the dependency lockfile, the Dockerfile uses the mutable `node:20-alpine` base tag and upgrades Alpine packages during the build. Deployment manifests also reference numbered image tags rather than immutable digests.
 
 ---
 
@@ -733,13 +849,9 @@ This process guarantees that every deployment is:
 
 Backend deployments use the Kubernetes RollingUpdate strategy.
 
-Benefits include:
+The configuration supports gradual Pod replacement and readiness-based traffic routing. Liveness probe failures can trigger container restarts; they do not automatically roll back a release.
 
-- Zero downtime deployments
-- Continuous API availability
-- Automatic replacement of Pods
-- Safe incremental rollout
-- Automatic recovery from unhealthy containers
+The manifest does not override the default rolling update limits. With five desired replicas, the default 25% limits allow one unavailable replica and two additional replicas during rollout. This supports availability during updates but does not guarantee zero downtime or uninterrupted requests; successful rollout also depends on application behavior, image availability, database connectivity, and cluster capacity.
 
 Deployment process:
 
@@ -923,13 +1035,13 @@ git commit -m "Describe the backend change"
 git push origin dev
 ```
 
-After the Backend CI workflow completes successfully:
+After Backend CI completes successfully for a qualifying push to `dev`:
 
 1. The Docker image is published to Docker Hub.
 2. A deployment Pull Request is created automatically in **Pipeline360-Infra**.
-3. The Pull Request is reviewed.
-4. The Pull Request is approved.
-5. The Pull Request is merged into `main`.
+3. The operator verifies the Pull Request and its validation results.
+4. The operator decides whether to approve the release; required PR reviews are not currently enforced.
+5. The Pull Request is manually merged into Infrastructure `main`.
 6. Argo CD deploys the updated Backend version.
 
 After merging:
