@@ -67,6 +67,8 @@ jobs:
           done
 
       - name: Generate build metadata
+        env:
+          SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           mkdir -p build-metadata
 
@@ -74,6 +76,7 @@ jobs:
           {
             "project": "Pipeline360-Backend",
             "commit": "${GITHUB_SHA}",
+            "source_commit": "${SOURCE_COMMIT}",
             "branch": "${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}",
             "build_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
