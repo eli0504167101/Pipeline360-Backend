@@ -1,44 +1,8 @@
-
-const express = require('express');
-const cors = require('cors');
 const mongoose = require('mongoose');
-
-const reservationRoutes = require('./routes/reservationRoutes');
-
-const app = express();
+const app = require('./app');
 
 const PORT = process.env.PORT || 3000;
 const dbURI = process.env.MONGO_URL;
-
-app.use(cors());
-app.use(express.json());
-
-// Liveness Probe:
-// בודק רק שהשרת עצמו חי
-app.get('/health', (req, res) => {
-    res.status(200).json({
-        status: 'healthy'
-    });
-});
-
-// Readiness Probe:
-// בודק גם שהחיבור ל-MongoDB מוכן.
-app.get('/ready', (req, res) => {
-    if (mongoose.connection.readyState !== 1) {
-        return res.status(503).json({
-            status: 'not ready',
-            database: 'disconnected'
-        });
-    }
-
-    res.status(200).json({
-        status: 'ready',
-        database: 'connected'
-    });
-});
-
-// נתיבי ה-API
-app.use('/api/reservations', reservationRoutes);
 
 const connectDB = async () => {
     if (!dbURI) {
