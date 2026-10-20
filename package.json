@@ -3,20 +3,24 @@
   "version": "1.0.0",
   "main": "src/server.js",
   "dependencies": {
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
-    "express": "^4.22.2",
+    "express": "^4.22.3",
+    "ipaddr.js": "^2.5.0",
     "mongoose": "^9.7.3"
   },
   "description": "Pipeline360 backend service",
   "devDependencies": {
+    "mongodb-memory-server-core": "^10.4.3",
     "supertest": "^7.3.1"
   },
   "scripts": {
     "start": "node src/server.js",
-    "check": "node --check src/app.js && node --check src/server.js && node --check src/config/db.js && node --check src/controllers/reservationController.js && node --check src/models/Hotel.js && node --check src/models/Reservation.js && node --check src/routes/reservationRoutes.js",
-    "test": "npm run check && npm run test:api",
-    "test:api": "node --test test/api.test.js"
+    "check": "node scripts/check.js",
+    "test": "npm run check && npm run test:api && npm run test:auth",
+    "test:api": "node --test test/api.test.js",
+    "test:auth": "node --test test/auth-config.test.js test/auth.integration.test.js test/database-lifecycle.test.js"
   },
   "keywords": [
     "pipeline360",
