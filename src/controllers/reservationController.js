@@ -3,6 +3,8 @@ const mongoose = require('mongoose');
 const Reservation = require('../models/Reservation');
 const Hotel = require('../models/Hotel');
 
+const ownerFilter = userId => ({ userId, $expr: { $eq: [{ $type: '$userId' }, 'objectId'] } });
+
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function normalizeText(value) {
@@ -16,16 +18,20 @@ function createReservationId() {
         .toUpperCase()}`;
 }
 
-// יצירת הזמנה
+// Create a reservation owned exclusively by the authenticated session.
 exports.createReservation = async (req, res) => {
     try {
-        const fullName = normalizeText(req.body.fullName);
-        const email = normalizeText(req.body.email).toLowerCase();
-        const hotelId = normalizeText(req.body.hotelId);
-        const checkIn = new Date(req.body.checkIn);
-        const checkOut = new Date(req.body.checkOut);
+        const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+        if (Object.hasOwn(body, 'userId')) {
+            return res.status(400).json({ error: 'Client-controlled userId is not allowed' });
+        }
+        const fullName = normalizeText(body.fullName);
+        const email = normalizeText(body.email).toLowerCase();
+        const hotelId = normalizeText(body.hotelId);
+        const checkIn = new Date(body.checkIn);
+        const checkOut = new Date(body.checkOut);
 
-        if (!fullName || !email || !hotelId || !req.body.checkIn || !req.body.checkOut) {
+        if (!fullName || !email || !hotelId || !body.checkIn || !body.checkOut) {
             return res.status(400).json({
                 error: 'Validation failed',
                 details: 'All reservation fields are required'
@@ -65,9 +71,7 @@ exports.createReservation = async (req, res) => {
             });
         }
 
-        // חפיפה קיימת כאשר:
-        // הזמנה קיימת מתחילה לפני תאריך היציאה החדש,
-        // ומסתיימת אחרי תאריך הכניסה החדש.
+        // Availability considers all reservations, including unowned legacy records.
         const conflictingReservation = await Reservation.findOne({
             hotelId,
             checkIn: { $lt: checkOut },
@@ -85,6 +89,7 @@ exports.createReservation = async (req, res) => {
 
         const newReservation = new Reservation({
             reservationId,
+            userId: req.auth.user._id,
             fullName,
             email,
             checkIn,
@@ -100,7 +105,7 @@ exports.createReservation = async (req, res) => {
             reservationId
         });
     } catch (error) {
-        console.error('Failed to create reservation:', error.message);
+        console.error('Failed to create reservation');
 
         if (error.code === 11000) {
             return res.status(409).json({
@@ -110,13 +115,12 @@ exports.createReservation = async (req, res) => {
         }
 
         return res.status(500).json({
-            error: 'Failed to create reservation',
-            details: error.message
+            error: 'Failed to create reservation'
         });
     }
 };
 
-// קבלת מלונות
+// List public hotel information.
 exports.getHotels = async (req, res) => {
     try {
         const hotels = await Hotel.find();
@@ -132,7 +136,7 @@ exports.getHotels = async (req, res) => {
     }
 };
 
-// חיפוש לפי Reservation ID, שם מלא או אימייל
+// Look up one owned reservation by reservation ID, full name, or email.
 exports.lookupReservation = async (req, res) => {
     try {
         const query = normalizeText(req.params.query);
@@ -144,6 +148,7 @@ exports.lookupReservation = async (req, res) => {
         }
 
         const reservation = await Reservation.findOne({
+            ...ownerFilter(req.auth.user._id),
             $or: [
                 { reservationId: query },
                 { fullName: query },
@@ -159,17 +164,15 @@ exports.lookupReservation = async (req, res) => {
 
         return res.status(200).json(reservation);
     } catch (error) {
-        console.error('Lookup reservation failed:', error.message);
+        console.error('Lookup reservation failed');
 
         return res.status(500).json({
-            error: 'Lookup reservation failed',
-            details: error.message
+            error: 'Lookup reservation failed'
         });
     }
 };
 
-// ביטול לפי Reservation ID.
-// נשמר fallback זמני ל-MongoDB _id עבור הזמנות ישנות.
+// Cancel only an owned reservation, including the legacy MongoDB ID fallback.
 exports.cancelReservation = async (req, res) => {
     try {
         const id = normalizeText(req.params.id);
@@ -181,11 +184,12 @@ exports.cancelReservation = async (req, res) => {
         }
 
         let reservation = await Reservation.findOneAndDelete({
-            reservationId: id
+            reservationId: id,
+            ...ownerFilter(req.auth.user._id)
         });
 
         if (!reservation && mongoose.isValidObjectId(id)) {
-            reservation = await Reservation.findByIdAndDelete(id);
+            reservation = await Reservation.findOneAndDelete({ _id: id, ...ownerFilter(req.auth.user._id) });
         }
 
         if (!reservation) {
@@ -199,11 +203,10 @@ exports.cancelReservation = async (req, res) => {
             reservationId: reservation.reservationId
         });
     } catch (error) {
-        console.error('Cancel reservation failed:', error.message);
+        console.error('Cancel reservation failed');
 
         return res.status(500).json({
-            message: 'Server Error',
-            details: error.message
+            message: 'Server Error'
         });
     }
 };

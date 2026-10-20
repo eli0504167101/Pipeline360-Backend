@@ -284,15 +284,19 @@ test('readiness stays unavailable until authentication indexes initialize', asyn
 });
 
 
-test('auth-enabled application preserves public reservation creation, lookup, and cancellation', async () => {
+test('auth-enabled application requires session ownership for reservation creation, lookup, and cancellation', async () => {
+    const cookie = await register();
+    const proof = await csrf(cookie);
     await Hotel.create({ hotelId: 'AUTH-REGRESSION-HOTEL', hotelName: 'Test Hotel', pricePerNight: 100 });
-    const response = await api(0, 'post', '/api/reservations').send({
+    const response = await api(0, 'post', '/api/reservations').set('Cookie', cookie)
+        .set('Origin', config.origin).set('X-CSRF-Token', proof).send({
         fullName: input.fullName, email: input.email, hotelId: 'AUTH-REGRESSION-HOTEL',
         checkIn: '2030-06-01', checkOut: '2030-06-03'
     }).expect(201);
     const id = response.body.reservationId;
-    await api(1, 'get', `/api/reservations/lookup/${id}`).expect(200);
-    await api(2, 'delete', `/api/reservations/${id}`).expect(200);
+    await api(1, 'get', `/api/reservations/lookup/${id}`).set('Cookie', cookie).expect(200);
+    await api(2, 'delete', `/api/reservations/${id}`).set('Cookie', cookie)
+        .set('Origin', config.origin).set('X-CSRF-Token', proof).send({}).expect(200);
     assert.equal(await Reservation.countDocuments(), 0);
 });
 

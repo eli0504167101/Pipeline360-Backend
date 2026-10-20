@@ -4,12 +4,24 @@ const request = require('supertest');
 const mongoose = require('mongoose');
 const Hotel = require('../src/models/Hotel');
 const Reservation = require('../src/models/Reservation');
+const Session = require('../src/models/Session');
+const User = require('../src/models/User');
+const { loadAuthConfig } = require('../src/config/auth');
+const { csrfToken } = require('../src/services/sessionService');
+const config = loadAuthConfig({ AUTH_ENV: 'local', AUTH_ORIGIN: 'http://hotel.local:3000' });
+const ownerId = new mongoose.Types.ObjectId('507f1f77bcf86cd799439012');
+const ownership = { userId: ownerId, $expr: { $eq: [{ $type: '$userId' }, 'objectId'] } };
+const token = 'a'.repeat(64);
+let originalState;
+function setDatabaseState(value) {
+    Object.defineProperty(mongoose.connection, 'readyState', { configurable: true, get: () => value });
+}
 
 // Guard application loading and every test against accidental database connections.
 const connectGuard = mock.method(mongoose, 'connect', () => {
     throw new Error('Database connections are forbidden in API tests');
 });
-const app = require('../src/app');
+const app = require('../src/app').createApp(config);
 // Suppress Express's expected malformed-JSON error log in this test process only.
 app.set('env', 'test');
 assert.equal(connectGuard.mock.callCount(), 0);
@@ -22,15 +34,22 @@ const reservationInput = {
     checkIn: '2030-06-01',
     checkOut: '2030-06-03'
 };
-const storedReservation = { reservationId: 'RES-TEST-1', ...reservationInput };
+const storedReservation = { reservationId: 'RES-TEST-1', ...reservationInput, userId: ownerId.toString() };
 let databaseMocks;
 let connectionMock;
 
 function api(method, path) {
-    return request(app)[method](path).timeout({ response: 2000, deadline: 5000 });
+    const result = request(app)[method](path).timeout({ response: 2000, deadline: 5000 })
+        .set('Cookie', `${config.cookieName}=${token}`).set('Origin', config.origin)
+        .set('X-CSRF-Token', csrfToken(token));
+    return method === 'delete' ? result.send({}) : result;
 }
 
 beforeEach(() => {
+    originalState = Object.getOwnPropertyDescriptor(mongoose.connection, 'readyState');
+    setDatabaseState(1);
+    mock.method(Session, 'findOne', () => ({ lean: async () => ({ userId: ownerId, expiresAt: new Date(Date.now() + 60000) }) }));
+    mock.method(User, 'findById', () => ({ lean: async () => ({ _id: ownerId, subscriptionTier: 'free' }) }));
     connectionMock = mock.method(mongoose, 'connect', () => {
         throw new Error('Database connections are forbidden in API tests');
     });
@@ -53,6 +72,8 @@ afterEach(() => {
         assert.equal(connectionMock.mock.callCount(), 0);
     } finally {
         mock.restoreAll();
+        if (originalState) Object.defineProperty(mongoose.connection, 'readyState', originalState);
+        else delete mongoose.connection.readyState;
     }
     assert.equal(mongoose.connection.readyState, 0);
 });
@@ -64,6 +85,7 @@ function assertNoDatabaseOperations() {
 }
 
 test('GET /health stays healthy without a database connection', async () => {
+    setDatabaseState(0);
     await api('get', '/health')
         .expect('Content-Type', /json/)
         .expect(200, { status: 'healthy' });
@@ -71,6 +93,7 @@ test('GET /health stays healthy without a database connection', async () => {
 });
 
 test('GET /ready reports a disconnected database', async () => {
+    setDatabaseState(0);
     await api('get', '/ready')
         .expect(503, { status: 'not ready', database: 'disconnected' });
     assertNoDatabaseOperations();
@@ -116,6 +139,7 @@ test('GET /api/reservations/lookup/:query returns a reservation', async () => {
     Reservation.findOne.mock.mockImplementation(async () => storedReservation);
     await api('get', '/api/reservations/lookup/RES-TEST-1').expect(200, storedReservation);
     assert.deepEqual(Reservation.findOne.mock.calls[0].arguments, [{
+        ...ownership,
         $or: [
             { reservationId: 'RES-TEST-1' },
             { fullName: 'RES-TEST-1' },
@@ -130,6 +154,7 @@ test('GET /api/reservations/lookup/:query returns 404 when absent', async () => 
         .expect(404, { message: 'Reservation not found' });
     assert.equal(Reservation.findOne.mock.callCount(), 1);
     assert.deepEqual(Reservation.findOne.mock.calls[0].arguments, [{
+        ...ownership,
         $or: [{ reservationId: 'missing' }, { fullName: 'missing' }, { email: 'missing' }]
     }]);
 });
@@ -137,7 +162,7 @@ test('GET /api/reservations/lookup/:query returns 404 when absent', async () => 
 test('GET /api/reservations/lookup/:query handles a database failure', async () => {
     Reservation.findOne.mock.mockImplementation(async () => { throw new Error('Test database failure'); });
     await api('get', '/api/reservations/lookup/RES-TEST-1').expect(500, {
-        error: 'Lookup reservation failed', details: 'Test database failure'
+        error: 'Lookup reservation failed'
     });
 });
 
@@ -179,6 +204,7 @@ test('POST /api/reservations accepts a valid email and creates a reservation', a
     assert.equal(saved.fullName, reservationInput.fullName);
     assert.equal(saved.reservationId, response.body.reservationId);
     assert.equal(saved.hotelId, reservationInput.hotelId);
+    assert.equal(String(saved.userId), String(ownerId));
     assert.deepEqual(saved.checkIn, new Date(reservationInput.checkIn));
     assert.deepEqual(saved.checkOut, new Date(reservationInput.checkOut));
 });
@@ -188,7 +214,7 @@ test('DELETE /api/reservations/:id cancels an existing reservation', async () =>
     await api('delete', '/api/reservations/RES-TEST-1').expect(200, {
         message: 'Reservation cancelled successfully', reservationId: 'RES-TEST-1'
     });
-    assert.deepEqual(Reservation.findOneAndDelete.mock.calls[0].arguments, [{ reservationId: 'RES-TEST-1' }]);
+    assert.deepEqual(Reservation.findOneAndDelete.mock.calls[0].arguments, [{ reservationId: 'RES-TEST-1', ...ownership }]);
     assert.equal(Reservation.findByIdAndDelete.mock.callCount(), 0);
 });
 
@@ -197,18 +223,17 @@ test('DELETE /api/reservations/:id returns 404 when absent', async () => {
     await api('delete', '/api/reservations/missing')
         .expect(404, { message: 'Reservation not found' });
     assert.equal(Reservation.findOneAndDelete.mock.callCount(), 1);
-    assert.deepEqual(Reservation.findOneAndDelete.mock.calls[0].arguments, [{ reservationId: 'missing' }]);
+    assert.deepEqual(Reservation.findOneAndDelete.mock.calls[0].arguments, [{ reservationId: 'missing', ...ownership }]);
     assert.equal(Reservation.findByIdAndDelete.mock.callCount(), 0);
 });
 
 test('DELETE /api/reservations/:id supports legacy MongoDB IDs', async () => {
     const legacyId = '507f1f77bcf86cd799439011';
-    Reservation.findOneAndDelete.mock.mockImplementation(async () => null);
-    Reservation.findByIdAndDelete.mock.mockImplementation(async () => storedReservation);
+    Reservation.findOneAndDelete.mock.mockImplementation(async filter => filter._id ? storedReservation : null);
     await api('delete', `/api/reservations/${legacyId}`).expect(200, {
         message: 'Reservation cancelled successfully', reservationId: 'RES-TEST-1'
     });
-    assert.deepEqual(Reservation.findByIdAndDelete.mock.calls[0].arguments, [legacyId]);
+    assert.deepEqual(Reservation.findOneAndDelete.mock.calls[1].arguments, [{ _id: legacyId, ...ownership }]);
 });
 
 for (const field of ['checkIn', 'checkOut']) {
@@ -271,7 +296,7 @@ for (const scenario of [
     },
     {
         name: 'save failure', status: 500,
-        body: { error: 'Failed to create reservation', details: 'Test save failure' }
+        body: { error: 'Failed to create reservation' }
     }
 ]) {
     test(`POST /api/reservations handles ${scenario.name}`, async () => {
@@ -288,7 +313,7 @@ for (const scenario of [
     });
 }
 
-// Characterize the existing public API; these are not membership security guarantees.
+// Preserve validation and reservation behavior under the authenticated ownership contract.
 for (const query of [' Test Guest ', ' GUEST@EXAMPLE.COM ']) {
     test(`GET lookup normalizes ${JSON.stringify(query)}`, async () => {
         Reservation.findOne.mock.mockImplementation(async () => storedReservation);
@@ -296,7 +321,8 @@ for (const query of [' Test Guest ', ' GUEST@EXAMPLE.COM ']) {
             .expect(200, storedReservation);
         const normalized = query.trim();
         assert.deepEqual(Reservation.findOne.mock.calls[0].arguments, [{
-            $or: [
+            ...ownership,
+        $or: [
                 { reservationId: normalized },
                 { fullName: normalized },
                 { email: normalized.toLowerCase() }
@@ -326,6 +352,7 @@ test('POST normalizes text fields before querying and saving', async () => {
     assert.equal(saved.fullName, reservationInput.fullName);
     assert.equal(saved.email, reservationInput.email);
     assert.equal(saved.hotelId, reservationInput.hotelId);
+    assert.equal(String(saved.userId), String(ownerId));
 });
 
 for (const [field, value] of [['fullName', '   '], ['email', {}], ['hotelId', 123]]) {
@@ -348,7 +375,7 @@ for (const operation of ['hotel lookup', 'availability lookup']) {
             throw new Error('Test lookup failure');
         });
         await api('post', '/api/reservations').send(reservationInput).expect(500, {
-            error: 'Failed to create reservation', details: 'Test lookup failure'
+            error: 'Failed to create reservation'
         });
         assert.equal(Reservation.prototype.save.mock.callCount(), 0);
         assert.equal(Reservation.findOne.mock.callCount(), operation === 'hotel lookup' ? 0 : 1);
@@ -367,23 +394,21 @@ test('DELETE returns 404 when both reservation ID and legacy ID are absent', asy
     Reservation.findByIdAndDelete.mock.mockImplementation(async () => null);
     await api('delete', `/api/reservations/${id}`)
         .expect(404, { message: 'Reservation not found' });
-    assert.deepEqual(Reservation.findOneAndDelete.mock.calls[0].arguments, [{ reservationId: id }]);
-    assert.deepEqual(Reservation.findByIdAndDelete.mock.calls[0].arguments, [id]);
+    assert.deepEqual(Reservation.findOneAndDelete.mock.calls[0].arguments, [{ reservationId: id, ...ownership }]);
+    assert.deepEqual(Reservation.findOneAndDelete.mock.calls[1].arguments, [{ _id: id, ...ownership }]);
 });
 
 for (const legacy of [false, true]) {
     test(`DELETE handles database failure in ${legacy ? 'legacy' : 'reservation ID'} lookup`, async () => {
-        Reservation.findOneAndDelete.mock.mockImplementation(async () => {
-            if (!legacy) throw new Error('Test cancellation failure');
+        Reservation.findOneAndDelete.mock.mockImplementation(async filter => {
+            if (!legacy || filter._id) throw new Error('Test cancellation failure');
             return null;
         });
-        Reservation.findByIdAndDelete.mock.mockImplementation(async () => {
-            throw new Error('Test cancellation failure');
-        });
         await api('delete', '/api/reservations/507f1f77bcf86cd799439011').expect(500, {
-            message: 'Server Error', details: 'Test cancellation failure'
+            message: 'Server Error'
         });
-        assert.equal(Reservation.findByIdAndDelete.mock.callCount(), legacy ? 1 : 0);
+        assert.equal(Reservation.findOneAndDelete.mock.callCount(), legacy ? 2 : 1);
+        assert.equal(Reservation.findByIdAndDelete.mock.callCount(), 0);
     });
 }
 
