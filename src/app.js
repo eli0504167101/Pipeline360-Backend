@@ -5,36 +5,44 @@ const mongoose = require('mongoose');
 
 const reservationRoutes = require('./routes/reservationRoutes');
 
-const app = express();
-
-app.use(cors());
-app.use(express.json());
-
-// Liveness Probe:
-// בודק רק שהשרת עצמו חי
-app.get('/health', (req, res) => {
-    res.status(200).json({
-        status: 'healthy'
-    });
-});
-
-// Readiness Probe:
-// בודק גם שהחיבור ל-MongoDB מוכן.
-app.get('/ready', (req, res) => {
-    if (mongoose.connection.readyState !== 1) {
-        return res.status(503).json({
-            status: 'not ready',
-            database: 'disconnected'
-        });
+function createApp(authConfig) {
+    const app = express();
+    if (authConfig) {
+        app.set('trust proxy', authConfig.trustedProxies);
+        app.use('/api/auth', require('./routes/authRoutes')(authConfig));
     }
 
-    res.status(200).json({
-        status: 'ready',
-        database: 'connected'
+    app.use(cors());
+    app.use(express.json());
+
+    // Liveness checks the HTTP server independently of database readiness.
+    app.get('/health', (req, res) => {
+        res.status(200).json({
+            status: 'healthy'
+        });
     });
-});
 
-// נתיבי ה-API
-app.use('/api/reservations', reservationRoutes);
+    // Readiness requires MongoDB and authentication indexes to be available.
+    app.get('/ready', (req, res) => {
+        if (mongoose.connection.readyState !== 1 || app.locals.authReady === false) {
+            return res.status(503).json({
+                status: 'not ready',
+                database: 'disconnected'
+            });
+        }
 
-module.exports = app;
+        res.status(200).json({
+            status: 'ready',
+            database: 'connected'
+        });
+    });
+
+    // Preserve the existing reservation routes.
+    app.use('/api/reservations', reservationRoutes);
+
+    return app;
+}
+
+// Keep the reservation regression app import free of startup/configuration side effects.
+module.exports = createApp();
+module.exports.createApp = createApp;

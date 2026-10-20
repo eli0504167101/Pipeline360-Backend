@@ -1,5 +1,9 @@
 const mongoose = require('mongoose');
-const app = require('./app');
+const { loadAuthConfig } = require('./config/auth');
+const { initializeAuthDatabase } = require('./services/authDatabase');
+const config = loadAuthConfig();
+const app = require('./app').createApp(config);
+app.locals.authReady = false;
 
 const PORT = process.env.PORT || 3000;
 const dbURI = process.env.MONGO_URL;
@@ -10,13 +14,14 @@ const connectDB = async () => {
     }
 
     await mongoose.connect(dbURI);
+    await initializeAuthDatabase();
+    app.locals.authReady = true;
 
     console.log('MongoDB connected successfully');
 };
 
 const startServer = async () => {
-    // מפעילים את שרת Express מיד,
-    // כדי שה-liveness probe יוכל לקבל תשובה.
+    // Keep liveness available while database initialization is in progress.
     app.listen(PORT, '0.0.0.0', () => {
         console.log(`Server running on port ${PORT}`);
     });
@@ -24,7 +29,7 @@ const startServer = async () => {
     try {
         await connectDB();
     } catch (error) {
-        console.error('MongoDB connection error:', error.message);
+        console.error('Database initialization failed');
     }
 };
 
