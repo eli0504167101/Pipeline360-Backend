@@ -45,7 +45,9 @@ The backend provides the following capabilities:
 - Register and authenticate users with MongoDB-backed sessions
 
 Authentication configuration, API contracts, tests, and deployment prerequisites are
-documented in [User Authentication](docs/authentication.md). Existing reservation
+documented in [User Authentication](docs/authentication.md). The review-only
+[Authentication Rollout Plan](docs/authentication-rollout.md) specifies configuration
+staging, acceptance checks, and rollback gates. Existing reservation
 endpoints remain public in this phase.
 
 ---

@@ -33,11 +33,26 @@ connection credentials in Git, command examples, logs, or PR descriptions.
 All replicas must use the same origin, cookie settings, database, and synchronized
 clocks. Sessions and rate counters are persisted in MongoDB, never process memory.
 No sticky sessions or shared signing secret are required. Authentication writes use
-majority write concern. Password hashing has a per-process concurrency bound; this
+majority write concern with a 5-second acknowledgement timeout. Auth model reads
+explicitly target the primary, even if the connection URI requests secondaries. Password hashing has a per-process concurrency bound; this
 is a resource safeguard, while the authentication attempt limit is database-shared.
 
-The server preserves liveness while connecting to MongoDB. Readiness and auth
-routes remain unavailable until unique/TTL index initialization succeeds. Database
+The server preserves liveness while connecting to MongoDB. Initial connection failures
+and failed collection/index initialization retry every five seconds. Automatic model
+DDL is disabled for auth models; explicit idempotent index creation can be retried
+without Mongoose's cached `Model.init()` failure. Existing indexes are never dropped
+or changed automatically. An incompatible index or duplicate account data keeps auth
+unready until an operator resolves the cause; the application does not delete data.
+
+Disconnect/error events immediately invalidate auth readiness once detected by the
+driver. The driver's topology monitor reconnects after an established connection is
+lost; authentication remains closed until all indexes have been revalidated. A
+connection generation prevents a stale in-flight initializer from restoring readiness.
+Heartbeat frequency is two seconds, selection/connect timeouts are five seconds, and
+socket timeout is 15 seconds. Each index build has `maxTimeMS=10000`; this bounds an
+individual operation, not the entire startup. Detection is not instantaneous after a
+physical network failure. Liveness remains available during outages. Readiness reports
+whether MongoDB is connected separately from the auth gate. Database
 errors return generic `503` responses without connection strings or error details.
 The reservation API retains its existing error behavior.
 
@@ -92,11 +107,13 @@ or saturated password hashing `503`.
 
 ## Shared rate limiting
 
-Login and registration share a fixed 15-minute budget: 60 attempts per source IP
+Login and registration share a fixed 15-minute budget: 60 attempts per IPv4 address or IPv6 /64
 and 10 per normalized email, including successful and malformed credential attempts.
 Counters use atomic MongoDB `$inc` operations and unique `_id` keys, with duplicate
 upsert retry. Limits survive application restarts and apply across all five replicas.
-A bucket ID hashes the scope, value, and time window; raw email/IP values are not
+IPv4-mapped addresses and IPv6 textual forms are normalized before hashing; IPv6
+privacy-address rotation inside one /64 shares the same budget. Invalid forwarded
+addresses fail closed. A bucket ID hashes the scope, value, and time window; raw email/IP values are not
 stored in rate records. TTL removes old buckets; the current window is chosen by
 server time, independently of cleanup. Fixed-window limits permit bursts around a
 window boundary. Email/IP hashes are pseudonymous, not anonymous.
@@ -139,8 +156,14 @@ Tests validate unique indexes, normalized duplicate registration, concurrent wri
 persisted password/session hashes, expiration before TTL cleanup, database reconnect,
 five independent Express app instances using the same database, logout revocation,
 CSRF separation, missing/invalid sessions, production cookies, shared atomic limits,
-forwarded-header spoof rejection, and fail-closed behavior during database failure.
-The five app instances share one test process; live load-balancing, failover, TLS
+forwarded-header spoof rejection, real database stop/restart and initial startup
+failure recovery, a failed unique-index build followed by operator repair in the
+private test database, and fail-closed behavior during database failure. Wire-level
+command monitoring verifies majority concern/timeout on user/session writes,
+session deletion, atomic counters, and index creation, plus primary auth reads.
+Only command metadata is retained; credentials and session data are not recorded.
+Lifecycle event/race tests supplement these real-database cases. The five app
+instances share one test process; live load-balancing, failover, TLS
 termination, and MongoDB replica-set majority availability still need deployment tests.
 
 ## Deployment prerequisites and limits
@@ -168,6 +191,14 @@ Infrastructure PR. Do not merge Infrastructure PR #50 as part of this work.
   and account deletion are not implemented. Duplicate registration discloses whether
   an email is registered, as required by the current duplicate rejection contract.
 - Already-authorized in-flight requests may finish while logout is processed.
+- A write acknowledgement timeout is not a rollback guarantee. Registration may have
+  persisted an account before returning `503`; retry login instead of assuming the
+  email is unused. Logout that returns `503` is not confirmed revocation. Do not
+  automatically replay writes or assume an error means no state changed.
+- Readiness checks connectivity and completed index initialization; it does not
+  continuously prove replica-set majority availability. Auth writes fail closed
+  if acknowledgement cannot be obtained. Replica-set failover/quorum loss still
+  require deployment validation.
 
 Compatible dependency updates resolve advisories reported during implementation in
 `proxy-addr`, `qs`, and `body-parser`; Express remains on major version 4. Rerun
