@@ -10,6 +10,8 @@ const connectGuard = mock.method(mongoose, 'connect', () => {
     throw new Error('Database connections are forbidden in API tests');
 });
 const app = require('../src/app');
+// Suppress Express's expected malformed-JSON error log in this test process only.
+app.set('env', 'test');
 assert.equal(connectGuard.mock.callCount(), 0);
 mock.restoreAll();
 
@@ -285,3 +287,117 @@ for (const scenario of [
         assert.equal(Reservation.prototype.save.mock.callCount(), 1);
     });
 }
+
+// Characterize the existing public API; these are not membership security guarantees.
+for (const query of [' Test Guest ', ' GUEST@EXAMPLE.COM ']) {
+    test(`GET lookup normalizes ${JSON.stringify(query)}`, async () => {
+        Reservation.findOne.mock.mockImplementation(async () => storedReservation);
+        await api('get', `/api/reservations/lookup/${encodeURIComponent(query)}`)
+            .expect(200, storedReservation);
+        const normalized = query.trim();
+        assert.deepEqual(Reservation.findOne.mock.calls[0].arguments, [{
+            $or: [
+                { reservationId: normalized },
+                { fullName: normalized },
+                { email: normalized.toLowerCase() }
+            ]
+        }]);
+    });
+}
+
+test('GET lookup rejects whitespace without querying the database', async () => {
+    await api('get', '/api/reservations/lookup/%20%20')
+        .expect(400, { message: 'Search value is required' });
+    assertNoDatabaseOperations();
+});
+
+test('POST normalizes text fields before querying and saving', async () => {
+    Hotel.findOne.mock.mockImplementation(async () => ({ hotelId: 'HOTEL-1' }));
+    Reservation.findOne.mock.mockImplementation(async () => null);
+    Reservation.prototype.save.mock.mockImplementation(async function () { return this; });
+    await api('post', '/api/reservations').send({
+        ...reservationInput,
+        fullName: '  Test Guest  ',
+        email: '  GUEST@EXAMPLE.COM  ',
+        hotelId: '  HOTEL-1  '
+    }).expect(201);
+    assert.deepEqual(Hotel.findOne.mock.calls[0].arguments, [{ hotelId: 'HOTEL-1' }]);
+    const saved = Reservation.prototype.save.mock.calls[0].this;
+    assert.equal(saved.fullName, reservationInput.fullName);
+    assert.equal(saved.email, reservationInput.email);
+    assert.equal(saved.hotelId, reservationInput.hotelId);
+});
+
+for (const [field, value] of [['fullName', '   '], ['email', {}], ['hotelId', 123]]) {
+    test(`POST rejects non-text or blank ${field} without database access`, async () => {
+        await api('post', '/api/reservations').send({ ...reservationInput, [field]: value })
+            .expect(400, {
+                error: 'Validation failed', details: 'All reservation fields are required'
+            });
+        assertNoDatabaseOperations();
+    });
+}
+
+for (const operation of ['hotel lookup', 'availability lookup']) {
+    test(`POST handles database failure during ${operation} without saving`, async () => {
+        Hotel.findOne.mock.mockImplementation(async () => {
+            if (operation === 'hotel lookup') throw new Error('Test lookup failure');
+            return { hotelId: 'HOTEL-1' };
+        });
+        Reservation.findOne.mock.mockImplementation(async () => {
+            throw new Error('Test lookup failure');
+        });
+        await api('post', '/api/reservations').send(reservationInput).expect(500, {
+            error: 'Failed to create reservation', details: 'Test lookup failure'
+        });
+        assert.equal(Reservation.prototype.save.mock.callCount(), 0);
+        assert.equal(Reservation.findOne.mock.callCount(), operation === 'hotel lookup' ? 0 : 1);
+    });
+}
+
+test('DELETE rejects a whitespace ID without querying the database', async () => {
+    await api('delete', '/api/reservations/%20%20')
+        .expect(400, { message: 'Reservation ID is required' });
+    assertNoDatabaseOperations();
+});
+
+test('DELETE returns 404 when both reservation ID and legacy ID are absent', async () => {
+    const id = '507f1f77bcf86cd799439011';
+    Reservation.findOneAndDelete.mock.mockImplementation(async () => null);
+    Reservation.findByIdAndDelete.mock.mockImplementation(async () => null);
+    await api('delete', `/api/reservations/${id}`)
+        .expect(404, { message: 'Reservation not found' });
+    assert.deepEqual(Reservation.findOneAndDelete.mock.calls[0].arguments, [{ reservationId: id }]);
+    assert.deepEqual(Reservation.findByIdAndDelete.mock.calls[0].arguments, [id]);
+});
+
+for (const legacy of [false, true]) {
+    test(`DELETE handles database failure in ${legacy ? 'legacy' : 'reservation ID'} lookup`, async () => {
+        Reservation.findOneAndDelete.mock.mockImplementation(async () => {
+            if (!legacy) throw new Error('Test cancellation failure');
+            return null;
+        });
+        Reservation.findByIdAndDelete.mock.mockImplementation(async () => {
+            throw new Error('Test cancellation failure');
+        });
+        await api('delete', '/api/reservations/507f1f77bcf86cd799439011').expect(500, {
+            message: 'Server Error', details: 'Test cancellation failure'
+        });
+        assert.equal(Reservation.findByIdAndDelete.mock.callCount(), legacy ? 1 : 0);
+    });
+}
+
+test('DELETE prefers a reservation ID match even when it looks like a MongoDB ID', async () => {
+    const id = '507f1f77bcf86cd799439011';
+    Reservation.findOneAndDelete.mock.mockImplementation(async () => ({ reservationId: id }));
+    await api('delete', `/api/reservations/${id}`).expect(200, {
+        message: 'Reservation cancelled successfully', reservationId: id
+    });
+    assert.equal(Reservation.findByIdAndDelete.mock.callCount(), 0);
+});
+
+test('POST rejects malformed JSON before querying the database', async () => {
+    await api('post', '/api/reservations')
+        .set('Content-Type', 'application/json').send('{broken').expect(400);
+    assertNoDatabaseOperations();
+});

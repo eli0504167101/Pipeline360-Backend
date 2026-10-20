@@ -209,7 +209,7 @@ Validation includes:
 - Valid check-in date
 - Valid check-out date
 - Check-out after check-in
-- Reservation availability
+- Reservation overlap lookup (not atomic under concurrent requests)
 - Unique reservation identifier
 
 ---
@@ -253,7 +253,7 @@ The backend uses the following environment variables:
 | Variable | Purpose | Default |
 |---|---|---|
 | `PORT` | HTTP port used by the Express server | `3000` |
-| `MONGO_URL` | MongoDB connection string | Local fallback defined by the application |
+| `MONGO_URL` | MongoDB connection string | Required; no fallback |
 
 In Kubernetes, `MONGO_URL` is provided by the `app-config` ConfigMap in the `Pipeline360-Infra` repository.
 
@@ -376,7 +376,7 @@ Pipeline360 separates application delivery from infrastructure deployment. GitHu
 
 ```mermaid
 flowchart TD
-    A[Backend PR to dev or main] --> B[Syntax checks and 27 API tests]
+    A[Backend PR to dev or main] --> B[Syntax checks and API regression tests]
     B --> C[Manual merge to dev]
     C --> D[Push to dev: validate again]
     D --> E[Build and push Docker image]
@@ -400,7 +400,7 @@ Pull request runs do not build or publish Docker images. Image publishing is res
 
 ### 2. Automated API Tests
 
-The test suite contains 27 tests implemented with Node.js `node:test` and `supertest`.
+The API regression suite is implemented in `test/api.test.js` with Node.js `node:test` and `supertest`. The test runner reports the current test count.
 
 Tests send HTTP requests through the actual Express middleware, routes, and controllers. Mongoose operations are mocked, so the suite requires no running MongoDB instance or database credentials.
 
@@ -415,6 +415,40 @@ Coverage includes:
 The Express application is exported from `src/app.js`; production startup and database connection logic remain in `src/server.js`. Mocks are restored between tests, and HTTP requests have timeouts.
 
 These tests validate API behavior without verifying persistence or query execution against a real database.
+
+Additional regression coverage includes text normalization, name/email lookup filters,
+blank lookup and cancellation IDs, legacy ID misses and failures, database failures
+before saving, malformed JSON, and reservation ID precedence over the legacy fallback.
+
+Run locally from the Backend repository:
+
+```bash
+npm ci
+npm test
+```
+
+`npm test` runs syntax checks followed by the API suite; `npm run test:api` runs only
+API tests. CI uses Node.js 20. Tests bind temporary local HTTP ports through
+`supertest`, mock model operations, and never require a live MongoDB instance.
+The connection guard prevents accidental calls to `mongoose.connect`.
+
+This suite characterizes the current unauthenticated API. Successful public lookup
+and legacy cancellation tests preserve existing behavior; they do not certify safe
+ownership checks. Authentication and membership are not implemented in this baseline.
+Cancellation still physically deletes records, error responses expose error details,
+and overlap checking is not atomic under concurrent requests. Persistence, index
+behavior, concurrency, Kubernetes, and browser flows require separate validation.
+
+### Jenkins validation
+
+`Jenkinsfile` defines checkout, dependency installation and tests, Docker build,
+Trivy scanning, Docker Hub login, and publishing a `jenkins-<build-number>` image.
+Its test stage uses `npm ci` so the `supertest` development dependency is available.
+The production Dockerfile continues to use `npm ci --omit=dev`.
+
+The Jenkinsfile contains no Kubernetes deployment or Infrastructure PR stage.
+Its presence does not establish that a live Jenkins job is configured or running.
+GitHub Actions and Argo CD retain the GitOps delivery flow documented below.
 
 ### 3. Docker Image Build and Push
 
@@ -451,7 +485,7 @@ The PR records the image tag, source commit, and CI run URL. Infrastructure vali
 
 The delivery process uses manual review and merge of the infrastructure PR as the release approval step. The automation does not merge the PR.
 
-Required reviews are not currently enforced by branch protection or rulesets; approval is an operational practice.
+The workflows do not enforce required reviews. Verify current GitHub branch protection and rulesets separately; repository files alone cannot establish their live state.
 
 The Argo CD application `pipeline360-backend` is configured with:
 
@@ -627,7 +661,7 @@ Pipeline360-Infra/main
 
 The workflow never pushes deployment changes directly to `main`.
 
-The intended release process is manual verification and merge of the Pull Request into `main`. The workflow does not merge it automatically. Required reviews are not currently enforced by branch protection or rulesets.
+The intended release process is manual verification and merge of the Pull Request into `main`. The workflow does not merge it automatically. Current branch protection and rulesets must be verified in GitHub; they cannot be established from these files.
 
 ---
 
@@ -837,7 +871,7 @@ Deployment occurs in two stages:
 1. Build and publish a Docker image.
 2. Update the Infrastructure repository.
 
-The intended release process is to verify the Infrastructure Pull Request and merge it into `main`. Argo CD automatically synchronizes changes from that branch. Review and approval are operational practices, not technically enforced prerequisites in the current repository configuration.
+The intended release process is to verify the Infrastructure Pull Request and merge it into `main`. Argo CD automatically synchronizes changes from that branch. The workflow does not enforce review approval; verify current GitHub rulesets and branch protection separately.
 
 Git records the manifest changes and provides a reviewable history linking image updates to source commits and workflow runs.
 
@@ -1040,7 +1074,7 @@ After Backend CI completes successfully for a qualifying push to `dev`:
 1. The Docker image is published to Docker Hub.
 2. A deployment Pull Request is created automatically in **Pipeline360-Infra**.
 3. The operator verifies the Pull Request and its validation results.
-4. The operator decides whether to approve the release; required PR reviews are not currently enforced.
+4. The operator decides whether to approve the release; required PR review enforcement must be verified in GitHub.
 5. The Pull Request is manually merged into Infrastructure `main`.
 6. Argo CD deploys the updated Backend version.
 

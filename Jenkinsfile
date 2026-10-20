@@ -21,7 +21,7 @@ pipeline {
                       -v jenkins_home:/var/jenkins_home \
                       -w "$WORKSPACE" \
                       node:20 \
-                      sh -c 'npm ci --omit=dev && npm test'
+                      sh -c 'npm ci && npm test'
                 '''
             }
         }
