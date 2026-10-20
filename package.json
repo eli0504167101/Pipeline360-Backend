@@ -18,9 +18,11 @@
   "scripts": {
     "start": "node src/server.js",
     "check": "node scripts/check.js",
-    "test": "npm run check && npm run test:api && npm run test:auth",
+    "test": "npm run check && npm run test:api && npm run test:auth && npm run test:ownership",
     "test:api": "node --test test/api.test.js",
-    "test:auth": "node --test test/auth-config.test.js test/auth.integration.test.js test/database-lifecycle.test.js"
+    "test:auth": "node --test test/auth-config.test.js test/auth.integration.test.js test/database-lifecycle.test.js",
+    "test:ownership": "node --test test/reservation-ownership.integration.test.js",
+    "migrate:ownership": "node scripts/migrate-reservation-ownership.js"
   },
   "keywords": [
     "pipeline360",
