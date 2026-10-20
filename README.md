@@ -48,7 +48,8 @@ Authentication configuration, API contracts, tests, and deployment prerequisites
 documented in [User Authentication](docs/authentication.md). The review-only
 [Authentication Rollout Plan](docs/authentication-rollout.md) specifies configuration
 staging, acceptance checks, and rollback gates. Existing reservation
-endpoints remain public in this phase.
+creation, lookup and cancellation require session ownership in Phase 3. See
+[Reservation Ownership](docs/reservation-ownership.md) before integration or release.
 
 ---
 
@@ -154,6 +155,9 @@ Returns all available hotels stored in MongoDB.
 
 ## Create Reservation
 
+Requires a valid session, configured Origin, JSON, and `X-CSRF-Token`. Owner is
+assigned by the server; a `userId` body field is rejected.
+
 ```text
 POST /api/reservations
 ```
@@ -186,7 +190,8 @@ Example response
 GET /api/reservations/lookup/{query}
 ```
 
-Supported lookup values:
+Requires a valid session and returns only an owned reservation. Unowned/foreign
+records return `404`, including matching name/email. Supported lookup values:
 
 - Reservation ID
 - Full name
@@ -200,7 +205,8 @@ Supported lookup values:
 DELETE /api/reservations/{reservationId}
 ```
 
-Removes the reservation from MongoDB.
+Requires the owner session, Origin, JSON `{}`, and `X-CSRF-Token`. Removes only the
+owned reservation from MongoDB. The `_id` fallback is also owner-scoped.
 
 ---
 
@@ -458,11 +464,11 @@ Authentication integration tests start their own temporary MongoDB process, desc
 in [User Authentication](docs/authentication.md). CI uses Node.js 20. HTTP tests
 bind temporary local ports through `supertest`.
 
-This suite characterizes the current unauthenticated API. Successful public lookup
-and legacy cancellation tests preserve existing behavior; they do not certify safe
-ownership checks. Authentication is implemented separately under `/api/auth`;
-reservation ownership and Premium features are not implemented.
-Cancellation still physically deletes records, error responses expose error details,
+This suite preserves reservation validation and response scenarios with authenticated
+fixtures. Ownership filters, CSRF, and the owner-scoped MongoDB ID fallback reflect
+the intentional Phase 3 contract changes. Separate real MongoDB tests validate
+cross-user/legacy isolation and non-destructive migration. Premium is not implemented.
+Cancellation still physically deletes owned records,
 and overlap checking is not atomic under concurrent requests. Persistence, index
 behavior, concurrency, Kubernetes, and browser flows require separate validation.
 
@@ -1061,10 +1067,11 @@ The request should return the list of hotels stored in MongoDB.
 Verify reservation lookup:
 
 ```bash
-curl http://127.0.0.1:3000/api/reservations/lookup/<reservation-id>
+curl --cookie <private-cookie-file> http://127.0.0.1:3000/api/reservations/lookup/<reservation-id>
 ```
 
-A valid reservation should return the stored reservation information.
+An owned reservation should return its stored information; anonymous requests return
+`401`, and foreign/unowned records return `404`.
 
 
 ---

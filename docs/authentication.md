@@ -1,7 +1,9 @@
 # User Authentication
 
-Phase 2 adds user accounts and MongoDB-backed sessions only. Existing reservation
-routes remain public and unchanged; they do not yet enforce account ownership.
+Phase 2 added user accounts and MongoDB-backed sessions. Phase 3 now protects
+reservation creation, individual lookup and cancellation with session ownership.
+See [Reservation Ownership](reservation-ownership.md) for breaking API changes,
+legacy isolation, migration and coordinated Frontend/release requirements.
 There are no Premium actions, booking history endpoints, frontend screens, or
 infrastructure changes in this phase.
 
@@ -54,7 +56,8 @@ individual operation, not the entire startup. Detection is not instantaneous aft
 physical network failure. Liveness remains available during outages. Readiness reports
 whether MongoDB is connected separately from the auth gate. Database
 errors return generic `503` responses without connection strings or error details.
-The reservation API retains its existing error behavior.
+Protected reservation routes also sanitize database errors; hotel listing keeps its
+existing public behavior.
 
 ## API
 
@@ -185,8 +188,9 @@ Infrastructure PR. Do not merge Infrastructure PR #50 as part of this work.
   resource usage under the existing CPU/memory limits.
 - Deployments must verify trusted proxy topology, real browser cookies, CSRF,
   rate limits, and revocation across separate processes/Pods before release.
-- Existing reservation lookup/cancellation remain public until a later approved
-  ownership phase. Do not describe this phase as protecting reservation data.
+- Reservation ownership is now enforced on creation, lookup and cancellation.
+  This Backend must not be deployed without the coordinated Frontend/cutover work
+  documented in `reservation-ownership.md`.
 - Email ownership verification, password reset, MFA, account-wide session revocation,
   and account deletion are not implemented. Duplicate registration discloses whether
   an email is registered, as required by the current duplicate rejection contract.
