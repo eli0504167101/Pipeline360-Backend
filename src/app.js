@@ -13,6 +13,7 @@ function createApp(authConfig) {
     }
 
     app.use(cors());
+    app.use('/api/reservations', reservationRoutes(authConfig));
     app.use(express.json());
 
     // Liveness checks the HTTP server independently of database readiness.
@@ -37,9 +38,6 @@ function createApp(authConfig) {
             database: 'connected'
         });
     });
-
-    // Preserve the existing reservation routes.
-    app.use('/api/reservations', reservationRoutes);
 
     return app;
 }

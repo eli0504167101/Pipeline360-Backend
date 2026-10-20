@@ -8,6 +8,12 @@ const reservationSchema = new mongoose.Schema(
       unique: true,
       trim: true
     },
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      immutable: true
+    },
     fullName: {
       type: String,
       required: true,
@@ -34,7 +40,9 @@ const reservationSchema = new mongoose.Schema(
     }
   },
   {
-    timestamps: true
+    timestamps: true,
+    read: 'primary',
+    writeConcern: { w: 'majority', wtimeout: 5000 }
   }
 );
 

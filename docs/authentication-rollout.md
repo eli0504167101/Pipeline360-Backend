@@ -1,9 +1,14 @@
 # Authentication Rollout Plan (Review Only)
 
 This plan does not authorize a merge, Kubernetes modification, or deployment.
-PR #7 remains a Draft until explicitly approved. Infrastructure PR #50 must remain
-open and unchanged; it targets the older `backend-21` image and is not the release
-vehicle for authentication. Frontend and reservation ownership are outside this phase.
+Backend PR #7 was merged at `10ef4a16ec4395bcf781c2e43a9362b0cd8c646c` and
+CI published `backend-24`; that is not deployment approval. Infrastructure PRs #50
+and #51 must remain open and unchanged during Phase 3.
+
+The configuration staging below still applies. This branch also contains breaking
+reservation ownership changes: see [Reservation Ownership](reservation-ownership.md)
+for the mandatory Frontend coordination and traffic cutover gate. Do not deploy this
+Backend independently.
 
 ## Verified repository inputs
 
@@ -97,7 +102,8 @@ review performs none of these operations.
 
 ## 4. Validate and release the authentication image through GitOps
 
-1. Approve and merge Backend PR #7 only after final head CI succeeds.
+1. Approve the intended Backend release only after final head CI succeeds. PR #7
+   is already merged; the later ownership release requires its own approval.
 2. Verify Backend CI and image publishing for the resulting merge commit. Record the
    actual image tag/digest and source commit; do not assume a workflow run number.
 3. Review the newly generated Infrastructure image PR and confirm it references that
@@ -123,8 +129,8 @@ review performs none of these operations.
   require successful index revalidation. Rehearse initial connection/index failure.
 - Test actual replica-set failover/quorum loss and ambiguous write acknowledgements;
   standalone integration tests do not prove these properties in the live topology.
-- Confirm original hotel/reservation flows still work and no ownership/Premium UI is
-  implied. Measure CPU/memory and the rate of hashing-saturation `503` responses.
+- Confirm public hotel browsing and authenticated owner-scoped reservation flows
+  work with the coordinated Frontend. No Premium UI is implied. Measure CPU/memory and the rate of hashing-saturation `503` responses.
 
 ## 6. Abort and rollback
 
