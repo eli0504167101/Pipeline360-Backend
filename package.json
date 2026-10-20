@@ -7,6 +7,7 @@
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
     "express": "^4.22.3",
+    "ipaddr.js": "^2.5.0",
     "mongoose": "^9.7.3"
   },
   "description": "Pipeline360 backend service",
@@ -19,7 +20,7 @@
     "check": "node scripts/check.js",
     "test": "npm run check && npm run test:api && npm run test:auth",
     "test:api": "node --test test/api.test.js",
-    "test:auth": "node --test test/auth-config.test.js test/auth.integration.test.js"
+    "test:auth": "node --test test/auth-config.test.js test/auth.integration.test.js test/database-lifecycle.test.js"
   },
   "keywords": [
     "pipeline360",

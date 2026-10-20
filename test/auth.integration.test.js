@@ -317,3 +317,176 @@ test('authenticated logout rejects expired sessions rather than clearing only th
     await Session.updateOne({}, { $set: { expiresAt: new Date(Date.now() - 1000) } });
     await post('logout', {}).set('Cookie', cookie).set('X-CSRF-Token', token).expect(401);
 });
+
+async function eventually(predicate, timeout = 15000) {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+        if (await predicate()) return;
+        await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    assert.fail('Database recovery did not reach the expected state');
+}
+
+test('failed unique index initialization recovers only after the underlying duplicate data is resolved', async () => {
+    await User.collection.dropIndex('email_1');
+    await User.collection.insertMany([
+        { fullName: 'One', email: input.email, passwordHash: 'test-only' },
+        { fullName: 'Two', email: input.email, passwordHash: 'test-only' }
+    ]);
+    const app = makeApp();
+    const { startDatabaseLifecycle } = require('../src/services/databaseLifecycle');
+    const lifecycle = startDatabaseLifecycle({ app, uri: database.getUri(), retryMs: 25, log: () => {} });
+    try {
+        await lifecycle.initial;
+        await request(app).get('/health').expect(200);
+        await request(app).get('/ready').expect(503, { status: 'not ready', database: 'connected' });
+        await request(app).post('/api/auth/register').set('Origin', config.origin).send(input).expect(503);
+        // Repair only this temporary test database, never production records.
+        await User.deleteMany({});
+        await eventually(() => app.locals.authReady);
+        await request(app).get('/ready').expect(200);
+        assert.ok((await User.collection.indexes()).some(index => index.key.email === 1 && index.unique));
+        await request(app).post('/api/auth/register').set('Origin', config.origin).send(input).expect(201);
+    } finally { lifecycle.stop(); }
+});
+
+test('real MongoDB process loss closes readiness and auth until reconnect/index revalidation', { timeout: 40000 }, async () => {
+    const { startDatabaseLifecycle } = require('../src/services/databaseLifecycle');
+    const app = makeApp();
+    const lifecycle = startDatabaseLifecycle({ app, uri: database.getUri(), retryMs: 25, log: () => {} });
+    const cookie = await register();
+    try {
+        await lifecycle.initial;
+        await database.stop({ doCleanup: false });
+        await eventually(() => mongoose.connection.readyState !== 1 && !app.locals.authReady);
+        await request(app).get('/health').expect(200);
+        await request(app).get('/ready').expect(503);
+        await request(app).get('/api/auth/me').set('Cookie', cookie).expect(503);
+        await database.start(true);
+        await eventually(() => app.locals.authReady);
+        await request(app).get('/ready').expect(200);
+        await request(app).get('/api/auth/me').set('Cookie', cookie).expect(200);
+    } finally {
+        lifecycle.stop();
+        if (database.state !== 'running') await database.start(true);
+        await eventually(() => mongoose.connection.readyState === 1);
+    }
+});
+
+test('authentication sends majority write concern on actual insert, delete, index and atomic counter commands', async () => {
+    await mongoose.disconnect();
+    // An unsafe URI preference must not change auth reads into stale secondary reads.
+    await mongoose.connect(database.getUri(), { monitorCommands: true, readPreference: 'secondary', serverSelectionTimeoutMS: 1000 });
+    const client = mongoose.connection.getClient();
+    const observed = [];
+    const listener = event => {
+        const command = event.command;
+        const collection = command.insert || command.delete || command.findAndModify || command.createIndexes || command.find;
+        if (['users', 'sessions', 'authratelimits'].includes(collection)) {
+            // Retain metadata only: never record credential or session data.
+            observed.push({ name: event.commandName, collection, writeConcern: command.writeConcern,
+                readPreference: command.$readPreference, maxTimeMS: command.maxTimeMS });
+        }
+    };
+    client.on('commandStarted', listener);
+    try {
+        await initializeAuthDatabase();
+        const previous = await register();
+        const response = await post('login', { email: input.email, password: input.password }).set('Cookie', previous).expect(200);
+        const cookie = sessionCookie(response);
+        await api().set('Cookie', cookie).expect(200);
+        await post('logout', {}).set('Cookie', cookie).set('X-CSRF-Token', await csrf(cookie)).expect(204);
+        for (const [name, collection] of [['insert', 'users'], ['insert', 'sessions'], ['delete', 'sessions'], ['findAndModify', 'authratelimits'], ['createIndexes', 'users']]) {
+            const commands = observed.filter(command => command.name === name && command.collection === collection);
+            assert.ok(commands.length > 0, `Missing wire command: ${name} ${collection}`);
+            for (const command of commands) assert.deepEqual(command.writeConcern, { w: 'majority', wtimeout: 5000 });
+        }
+        const reads = observed.filter(command => command.name === 'find');
+        assert.ok(reads.length > 0);
+        for (const command of reads) assert.ok(!command.readPreference || command.readPreference.mode === 'primary');
+        for (const command of observed.filter(command => command.name === 'createIndexes')) assert.equal(command.maxTimeMS, 10000);
+    } finally {
+        client.off('commandStarted', listener);
+        await mongoose.disconnect();
+        await mongoose.connect(database.getUri());
+    }
+});
+
+for (const trusted of [false, true]) {
+    test(`proxy chain honors the first untrusted hop (socket trusted=${trusted})`, async () => {
+        const proxyConfig = { ...config, trustedProxies: trusted ? ['127.0.0.1', '::1'] : [], ipLimit: 2 };
+        const app = makeApp(proxyConfig);
+        const clientIp = '192.0.2.44';
+        for (let index = 0; index < 3; index++) {
+            await request(app).post('/api/auth/login').set('Origin', config.origin)
+                .set('X-Forwarded-For', `198.51.100.${index + 1}, ${clientIp}`)
+                .send({ email: `proxy${index}@example.com`, password: 'short' })
+                .expect(index < 2 ? 400 : 429);
+        }
+        if (trusted) {
+            // A distinct real client behind the same trusted proxy has its own budget.
+            await request(app).post('/api/auth/login').set('Origin', config.origin)
+                .set('X-Forwarded-For', '192.0.2.45')
+                .send({ email: 'different@example.com', password: 'short' }).expect(400);
+        }
+    });
+}
+
+test('IPv6 address rotation inside one /64 shares the IP rate budget', async () => {
+    const app = makeApp({ ...config, trustedProxies: ['127.0.0.1', '::1'], ipLimit: 2 });
+    for (let index = 0; index < 3; index++) {
+        await request(app).post('/api/auth/login').set('Origin', config.origin)
+            .set('X-Forwarded-For', `2001:db8::${index + 1}`)
+            .send({ email: `ipv6${index}@example.com`, password: 'short' }).expect(index < 2 ? 400 : 429);
+    }
+});
+
+test('unsupported JSON charset is a sanitized client error rather than an availability failure', async () => {
+    await api(0, 'post', '/api/auth/login').set('Origin', config.origin)
+        .set('Content-Type', 'application/json; charset=iso-8859-1').send('{}')
+        .expect(415, { error: 'Unsupported JSON encoding' });
+});
+
+test('real initial connection failure retries and becomes ready after MongoDB starts', { timeout: 30000 }, async () => {
+    const uri = database.getUri();
+    await mongoose.disconnect();
+    await database.stop({ doCleanup: false });
+    const app = makeApp();
+    const { startDatabaseLifecycle } = require('../src/services/databaseLifecycle');
+    const lifecycle = startDatabaseLifecycle({ app, uri, retryMs: 25, log: () => {} });
+    try {
+        await lifecycle.initial;
+        assert.equal(app.locals.authReady, false);
+        await request(app).get('/health').expect(200);
+        await request(app).get('/ready').expect(503);
+        await request(app).post('/api/auth/register').set('Origin', config.origin).send(input).expect(503);
+        await database.start(true);
+        await eventually(() => app.locals.authReady);
+        await request(app).get('/ready').expect(200);
+        await request(app).post('/api/auth/register').set('Origin', config.origin).send(input).expect(201);
+    } finally {
+        lifecycle.stop();
+        if (database.state !== 'running') await database.start(true);
+        await eventually(() => mongoose.connection.readyState === 1);
+    }
+});
+
+test('HTTPS logout clears the same secure host-only cookie and forwarded proto cannot downgrade it', async () => {
+    const secure = loadAuthConfig({ AUTH_ENV: 'production', AUTH_ORIGIN: 'https://hotel.example' });
+    const app = makeApp(secure);
+    const registered = await request(app).post('/api/auth/register').set('Origin', secure.origin)
+        .set('X-Forwarded-Proto', 'http').send(input).expect(201);
+    const cookie = sessionCookie(registered);
+    assert.match(registered.headers['set-cookie'][0], /; Secure/);
+    const proof = (await request(app).get('/api/auth/csrf').set('Cookie', cookie).expect(200)).body.csrfToken;
+    const response = await request(app).post('/api/auth/logout').set('Origin', secure.origin)
+        .set('Cookie', cookie).set('X-CSRF-Token', proof).set('X-Forwarded-Proto', 'http').send({}).expect(204);
+    const cleared = response.headers['set-cookie'][0];
+    assert.match(cleared, /^__Host-p360_session=;/);
+    assert.match(cleared, /; Path=\//);
+    assert.match(cleared, /; HttpOnly/);
+    assert.match(cleared, /; Secure/);
+    assert.match(cleared, /; SameSite=Lax/);
+    assert.doesNotMatch(cleared, /Domain=/);
+    await request(app).get('/api/auth/me').set('Cookie', cookie).expect(401);
+});

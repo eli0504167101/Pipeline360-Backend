@@ -80,3 +80,11 @@ test('server rejects insecure production configuration before opening a listener
     assert.match(result.stderr, /Demo and production authentication require HTTPS/);
     assert.equal(result.stdout.includes('Server running'), false);
 });
+
+test('IP budgets normalize mapped IPv4 and IPv6 textual variants and privacy addresses', () => {
+    const { clientNetwork } = require('../src/middleware/authRateLimit');
+    assert.equal(clientNetwork('::ffff:192.0.2.1'), clientNetwork('192.0.2.1'));
+    assert.equal(clientNetwork('2001:db8::1'), clientNetwork('2001:0db8:0000:0000:0:0:0:2'));
+    assert.notEqual(clientNetwork('2001:db8:0:1::1'), clientNetwork('2001:db8:0:2::1'));
+    assert.throws(() => clientNetwork('invalid'));
+});

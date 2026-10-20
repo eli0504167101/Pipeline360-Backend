@@ -1,4 +1,5 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const cookieParser = require('cookie-parser');
 const { authController } = require('../controllers/authController');
 const { requireAuth, publicUser } = require('../middleware/auth');
@@ -13,7 +14,7 @@ function authRoutes(config) {
     const origin = requireOrigin(config);
     router.use((req, res, next) => {
         res.set({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
-        if (req.app.locals.authReady === false) {
+        if (req.app.locals.authReady === false || mongoose.connection.readyState !== 1) {
             return res.status(503).json({ error: 'Authentication temporarily unavailable' });
         }
         next();
@@ -36,6 +37,7 @@ function authRoutes(config) {
     router.use((req, res) => res.status(404).json({ error: 'Authentication endpoint not found' }));
     router.use((error, req, res, next) => {
         if (error.type === 'entity.parse.failed') return res.status(400).json({ error: 'Invalid JSON' });
+        if (error.status === 415) return res.status(415).json({ error: 'Unsupported JSON encoding' });
         if (error.type === 'entity.too.large') return res.status(413).json({ error: 'Request too large' });
         return res.status(503).json({ error: 'Authentication temporarily unavailable' });
     });

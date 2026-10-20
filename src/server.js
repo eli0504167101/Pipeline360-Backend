@@ -1,37 +1,16 @@
-const mongoose = require('mongoose');
 const { loadAuthConfig } = require('./config/auth');
-const { initializeAuthDatabase } = require('./services/authDatabase');
+const { startDatabaseLifecycle } = require('./services/databaseLifecycle');
 const config = loadAuthConfig();
+const dbURI = process.env.MONGO_URL;
+if (!dbURI || !/^mongodb(?:\+srv)?:\/\//.test(dbURI)) {
+    throw new Error('MONGO_URL must be an explicit MongoDB connection string');
+}
 const app = require('./app').createApp(config);
 app.locals.authReady = false;
-
 const PORT = process.env.PORT || 3000;
-const dbURI = process.env.MONGO_URL;
 
-const connectDB = async () => {
-    if (!dbURI) {
-        throw new Error('MONGO_URL environment variable is not defined');
-    }
-
-    await mongoose.connect(dbURI);
-    await initializeAuthDatabase();
-    app.locals.authReady = true;
-
-    console.log('MongoDB connected successfully');
-};
-
-const startServer = async () => {
-    // Keep liveness available while database initialization is in progress.
-    app.listen(PORT, '0.0.0.0', () => {
-        console.log(`Server running on port ${PORT}`);
-    });
-
-    try {
-        await connectDB();
-    } catch (error) {
-        console.error('Database initialization failed');
-    }
-};
-
-startServer();
-
+// Keep liveness available during database startup/recovery. Never log the URI.
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on port ${PORT}`);
+});
+startDatabaseLifecycle({ app, uri: dbURI });

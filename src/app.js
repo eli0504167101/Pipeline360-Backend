@@ -24,10 +24,11 @@ function createApp(authConfig) {
 
     // Readiness requires MongoDB and authentication indexes to be available.
     app.get('/ready', (req, res) => {
-        if (mongoose.connection.readyState !== 1 || app.locals.authReady === false) {
+        const connected = mongoose.connection.readyState === 1;
+        if (!connected || app.locals.authReady === false) {
             return res.status(503).json({
                 status: 'not ready',
-                database: 'disconnected'
+                database: connected ? 'connected' : 'disconnected'
             });
         }
 
