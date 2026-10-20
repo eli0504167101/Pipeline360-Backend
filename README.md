@@ -42,6 +42,11 @@ The backend provides the following capabilities:
 - Validate reservation requests
 - Store application data in MongoDB
 - Expose health and readiness endpoints
+- Register and authenticate users with MongoDB-backed sessions
+
+Authentication configuration, API contracts, tests, and deployment prerequisites are
+documented in [User Authentication](docs/authentication.md). Existing reservation
+endpoints remain public in this phase.
 
 ---
 
@@ -216,7 +221,8 @@ Validation includes:
 
 ## MongoDB Collections
 
-The backend uses two collections.
+The backend uses five collections. The existing hotel/reservation collections are
+unchanged; authentication adds users, sessions, and shared attempt counters.
 
 ### hotels
 
@@ -246,6 +252,15 @@ Typical fields include:
 
 ---
 
+### users, sessions, and authratelimits
+
+Store user accounts, hashed session identifiers with absolute expiry, and atomic
+authentication attempt counters. Unique and TTL indexes are initialized before
+authentication becomes available. See [User Authentication](docs/authentication.md)
+for fields, security rules, and isolated database tests.
+
+---
+
 ## Environment Variables
 
 The backend uses the following environment variables:
@@ -254,6 +269,9 @@ The backend uses the following environment variables:
 |---|---|---|
 | `PORT` | HTTP port used by the Express server | `3000` |
 | `MONGO_URL` | MongoDB connection string | Required; no fallback |
+| `AUTH_ENV` | `local`, `demo`, or `production` | Required |
+| `AUTH_ORIGIN` | Exact browser origin; HTTPS outside local development | Required |
+| `AUTH_TRUSTED_PROXIES` | Explicit trusted proxy IPs/CIDRs | No proxies trusted |
 
 In Kubernetes, `MONGO_URL` is provided by the `app-config` ConfigMap in the `Pipeline360-Infra` repository.
 
@@ -286,7 +304,8 @@ Run backend validation:
 npm test
 ```
 
-Start the application locally:
+Set the authentication environment described in [User Authentication](docs/authentication.md)
+and `MONGO_URL` before starting the application locally:
 
 ```bash
 npm start
@@ -311,7 +330,8 @@ curl http://127.0.0.1:3000/ready
 ```
 
 > [!NOTE]
-> The readiness endpoint returns a successful response only when MongoDB is connected.
+> The readiness endpoint returns a successful response only when MongoDB is connected
+> and authentication index initialization has completed.
 
 ---
 
@@ -359,6 +379,8 @@ docker run \
   --rm \
   -p 3000:3000 \
   -e PORT=3000 \
+  -e AUTH_ENV=local \
+  -e AUTH_ORIGIN=http://127.0.0.1:3000 \
   -e MONGO_URL="mongodb://host.docker.internal:27017/Pipeline360_PROD" \
   pipeline360-backend:local
 ```
@@ -427,14 +449,17 @@ npm ci
 npm test
 ```
 
-`npm test` runs syntax checks followed by the API suite; `npm run test:api` runs only
-API tests. CI uses Node.js 20. Tests bind temporary local HTTP ports through
-`supertest`, mock model operations, and never require a live MongoDB instance.
-The connection guard prevents accidental calls to `mongoose.connect`.
+`npm test` runs syntax checks, the API suite, and isolated authentication integration
+tests. `npm run test:api` runs only the 42 reservation regression tests, which mock
+model operations and guard against accidental calls to `mongoose.connect`.
+Authentication integration tests start their own temporary MongoDB process, described
+in [User Authentication](docs/authentication.md). CI uses Node.js 20. HTTP tests
+bind temporary local ports through `supertest`.
 
 This suite characterizes the current unauthenticated API. Successful public lookup
 and legacy cancellation tests preserve existing behavior; they do not certify safe
-ownership checks. Authentication and membership are not implemented in this baseline.
+ownership checks. Authentication is implemented separately under `/api/auth`;
+reservation ownership and Premium features are not implemented.
 Cancellation still physically deletes records, error responses expose error details,
 and overlap checking is not atomic under concurrent requests. Persistence, index
 behavior, concurrency, Kubernetes, and browser flows require separate validation.
